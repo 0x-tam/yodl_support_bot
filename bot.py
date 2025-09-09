@@ -4,7 +4,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-SUPPORT_GROUP_ID = int(os.environ["SUPPORT_GROUP_ID"])
+SUPPORT_GROUP_ID = int(os.environ.get("SUPPORT_GROUP_ID", "0"))  # 0 until we learn the real ID
 
 def who(update: Update) -> str:
     u = update.effective_user
@@ -12,9 +12,7 @@ def who(update: Update) -> str:
     return f"{name} (@{u.username})" if u.username else name
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_chat.send_message(
-        "Hi! You’ve reached support. Please tell us what’s wrong."
-    )
+    await update.effective_chat.send_message("Hi! You’ve reached support. Please tell us what’s wrong.")
 
 async def user_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
@@ -24,21 +22,23 @@ async def user_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         "✅ Thank you for reaching out to us.\n"
         "Our support team has received your message and is reviewing it.\n"
-        "We’ll get back to you as soon as possible — usually within 24 hours."
+        "We’ll get back to you as soon as possible, usually within 24 hours."
     )
 
-    # Forward to support group
-    header = textwrap.dedent(f"""
-    ✉️ From {who(update)}
-    chat_id: <code>{chat.id}</code>
-    """).strip()
-    body = html.escape(msg.text) if msg.text else "(non-text)"
-    await context.bot.send_message(
-        chat_id=SUPPORT_GROUP_ID,
-        text=header + "\n\n" + body,
-        parse_mode=ParseMode.HTML,
-    )
+    # Forward to support group when we have the real ID
+    if SUPPORT_GROUP_ID != 0:
+        header = textwrap.dedent(f"""
+        ✉️ From {who(update)}
+        chat_id: <code>{chat.id}</code>
+        """).strip()
+        body = html.escape(msg.text) if msg.text else "(non-text)"
+        await context.bot.send_message(
+            chat_id=SUPPORT_GROUP_ID,
+            text=header + "\n\n" + body,
+            parse_mode=ParseMode.HTML,
+        )
 
+# /to <chat_id> <message> used inside the support group
 async def cmd_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != SUPPORT_GROUP_ID:
         return
@@ -54,11 +54,18 @@ async def cmd_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=target, text=text)
     await update.message.reply_text("✅ Sent.")
 
+# /gid prints the current chat's ID, so you can grab the group ID
+async def gid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Group ID: {update.effective_chat.id}")
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+    # User side
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, user_msg))
+    # Group side
     app.add_handler(CommandHandler("to", cmd_to))
+    app.add_handler(CommandHandler("gid", gid_cmd))
     app.run_polling()
 
 if __name__ == "__main__":
