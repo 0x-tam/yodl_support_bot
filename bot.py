@@ -1,71 +1,61 @@
 import os, html, textwrap
-from telegram import Update
+from telegram import Update, Message
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, MessageHandler, CommandHandler, ContextTypes, filters
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-SUPPORT_GROUP_ID = int(os.environ.get("SUPPORT_GROUP_ID", "0"))  # 0 until we learn the real ID
+# Put 0 first, deploy, run /gid in your support group to get the real ID, then update and redeploy.
+FORWARD_TO_ID = int(os.environ.get("FORWARD_TO_ID", "0"))
 
 def who(update: Update) -> str:
     u = update.effective_user
     name = u.first_name or "User"
     return f"{name} (@{u.username})" if u.username else name
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_chat.send_message("Hi! You’ve reached support. Please tell us what’s wrong.")
+# /gid helper to discover a group's numeric chat id
+async def gid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Group ID: {update.effective_chat.id}")
 
-async def user_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
+# Forward every message the bot receives to FORWARD_TO_ID
+async def any_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    msg: Message = update.effective_message
 
-    # Auto reply to the user
-    await msg.reply_text(
-        "✅ Thank you for reaching out to us.\n"
-        "Our support team has received your message and is reviewing it.\n"
-        "We’ll get back to you as soon as possible, usually within 24 hours."
-    )
+    # Do nothing until FORWARD_TO_ID is configured
+    if FORWARD_TO_ID == 0:
+        return
 
-    # Forward to support group when we have the real ID
-    if SUPPORT_GROUP_ID != 0:
-        header = textwrap.dedent(f"""
-        ✉️ From {who(update)}
-        chat_id: <code>{chat.id}</code>
-        """).strip()
-        body = html.escape(msg.text) if msg.text else "(non-text)"
+    # Avoid loops: ignore messages originating in the destination chat
+    if chat.id == FORWARD_TO_ID:
+        return
+
+    # Build a small header with sender info
+    header = textwrap.dedent(f"""
+    ✉️ From {who(update)}
+    chat_id: <code>{chat.id}</code>
+    """).strip()
+
+    # Try to copy original message (keeps media); fall back to text if needed
+    try:
+        await msg.copy(
+            chat_id=FORWARD_TO_ID,
+            caption=(header if not msg.caption else f"{header}\n\n{msg.caption}"),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        body = msg.text_html if msg.text else "(non-text message)"
         await context.bot.send_message(
-            chat_id=SUPPORT_GROUP_ID,
+            chat_id=FORWARD_TO_ID,
             text=header + "\n\n" + body,
             parse_mode=ParseMode.HTML,
         )
 
-# /to <chat_id> <message> used inside the support group
-async def cmd_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SUPPORT_GROUP_ID:
-        return
-    if len(context.args) < 2:
-        await update.message.reply_text("Usage: /to <chat_id> <message>")
-        return
-    try:
-        target = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("chat_id must be an integer.")
-        return
-    text = " ".join(context.args[1:])
-    await context.bot.send_message(chat_id=target, text=text)
-    await update.message.reply_text("✅ Sent.")
-
-# /gid prints the current chat's ID, so you can grab the group ID
-async def gid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Group ID: {update.effective_chat.id}")
-
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    # User side
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, user_msg))
-    # Group side
-    app.add_handler(CommandHandler("to", cmd_to))
+    # Command to get a chat's ID (send /gid in your support group)
     app.add_handler(CommandHandler("gid", gid_cmd))
+    # Catch ALL messages (private, groups, media, etc.)
+    app.add_handler(MessageHandler(filters.ALL, any_msg))
     app.run_polling()
 
 if __name__ == "__main__":
